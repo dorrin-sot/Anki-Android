@@ -18,7 +18,10 @@
 
 package com.ichi2.anki
 
-import android.content.*
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.SystemClock
@@ -33,6 +36,7 @@ import androidx.activity.result.contract.ActivityResultContracts.StartActivityFo
 import androidx.annotation.CheckResult
 import androidx.annotation.VisibleForTesting
 import androidx.appcompat.widget.SearchView
+import androidx.core.content.edit
 import com.afollestad.materialdialogs.MaterialDialog
 import com.afollestad.materialdialogs.MaterialDialog.ListCallbackSingleChoice
 import com.google.android.material.snackbar.Snackbar
@@ -44,17 +48,13 @@ import com.ichi2.anki.UIUtils.saveCollectionInBackground
 import com.ichi2.anki.UIUtils.showSimpleSnackbar
 import com.ichi2.anki.UIUtils.showSnackbar
 import com.ichi2.anki.UIUtils.showThemedToast
-import com.ichi2.anki.dialogs.CardBrowserMySearchesDialog
+import com.ichi2.anki.dialogs.*
 import com.ichi2.anki.dialogs.CardBrowserMySearchesDialog.Companion.newInstance
 import com.ichi2.anki.dialogs.CardBrowserMySearchesDialog.MySearchesDialogListener
 import com.ichi2.anki.dialogs.CardBrowserOrderDialog.Companion.newInstance
-import com.ichi2.anki.dialogs.ConfirmationDialog
-import com.ichi2.anki.dialogs.DeckSelectionDialog
 import com.ichi2.anki.dialogs.DeckSelectionDialog.Companion.newInstance
 import com.ichi2.anki.dialogs.DeckSelectionDialog.DeckSelectionListener
 import com.ichi2.anki.dialogs.DeckSelectionDialog.SelectableDeck
-import com.ichi2.anki.dialogs.IntegerDialog
-import com.ichi2.anki.dialogs.RescheduleDialog
 import com.ichi2.anki.dialogs.RescheduleDialog.rescheduleMultipleCards
 import com.ichi2.anki.dialogs.RescheduleDialog.rescheduleSingleCard
 import com.ichi2.anki.dialogs.SimpleMessageDialog.Companion.newInstance
@@ -63,23 +63,12 @@ import com.ichi2.anki.dialogs.tags.TagsDialogFactory
 import com.ichi2.anki.dialogs.tags.TagsDialogListener
 import com.ichi2.anki.receiver.SdCardReceiver
 import com.ichi2.anki.servicelayer.NoteService.isMarked
-import com.ichi2.anki.servicelayer.SchedulerService.NextCard
-import com.ichi2.anki.servicelayer.SchedulerService.RepositionCards
-import com.ichi2.anki.servicelayer.SchedulerService.RescheduleCards
-import com.ichi2.anki.servicelayer.SchedulerService.ResetCards
+import com.ichi2.anki.servicelayer.SchedulerService.*
 import com.ichi2.anki.servicelayer.SearchService.SearchCardsResult
 import com.ichi2.anki.servicelayer.UndoService.Undo
 import com.ichi2.anki.widgets.DeckDropDownAdapter.SubtitleListener
 import com.ichi2.async.CollectionTask
-import com.ichi2.async.CollectionTask.ChangeDeckMulti
-import com.ichi2.async.CollectionTask.CheckCardSelection
-import com.ichi2.async.CollectionTask.DeleteNoteMulti
-import com.ichi2.async.CollectionTask.MarkNoteMulti
-import com.ichi2.async.CollectionTask.RenderBrowserQA
-import com.ichi2.async.CollectionTask.SearchCards
-import com.ichi2.async.CollectionTask.SuspendCardMulti
-import com.ichi2.async.CollectionTask.UpdateMultipleNotes
-import com.ichi2.async.CollectionTask.UpdateNote
+import com.ichi2.async.CollectionTask.*
 import com.ichi2.async.TaskListenerWithContext
 import com.ichi2.async.TaskManager
 import com.ichi2.compat.Compat
@@ -91,21 +80,19 @@ import com.ichi2.themes.Themes.getColorFromAttr
 import com.ichi2.ui.CardBrowserSearchView
 import com.ichi2.ui.FixedTextView
 import com.ichi2.upgrade.Upgrade.upgradeJSONIfNecessary
-import com.ichi2.utils.*
+import com.ichi2.utils.Computation
 import com.ichi2.utils.HandlerUtils.postDelayedOnNewHandler
 import com.ichi2.utils.HashUtil.HashMapInit
+import com.ichi2.utils.JSONObject
+import com.ichi2.utils.KotlinCleanup
+import com.ichi2.utils.LanguageUtil
 import com.ichi2.utils.Permissions.hasStorageAccessPermission
 import com.ichi2.utils.TagsUtil.getUpdatedTags
 import com.ichi2.widget.WidgetStatus.update
 import net.ankiweb.rsdroid.RustCleanup
 import timber.log.Timber
-import java.lang.Exception
-import java.lang.IllegalStateException
-import java.lang.StringBuilder
 import java.util.*
 import java.util.function.Consumer
-import java.util.stream.Collectors
-import kotlin.collections.ArrayList
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -115,7 +102,6 @@ import kotlin.math.min
 @KotlinCleanup("scan through this class and add attributes - not started")
 @KotlinCleanup("Add TextUtils.isNotNullOrEmpty accepting nulls and use it. Remove TextUtils import")
 open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelectionListener, TagsDialogListener {
-    @KotlinCleanup("using ?. and let keyword would be good here")
     override fun onDeckSelected(deck: SelectableDeck?) {
         deck ?: return
         val deckId = deck.deckId
@@ -267,14 +253,12 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
             if (mOrder == 0) {
                 // if the sort value in the card browser was changed, then perform a new search
                 col.set_config("sortType", fSortTypes[1])
-                AnkiDroidApp.getSharedPrefs(baseContext).edit()
-                    .putBoolean("cardBrowserNoSorting", true)
-                    .apply()
+                AnkiDroidApp.getSharedPrefs(baseContext)
+                    .edit { putBoolean("cardBrowserNoSorting", true) }
             } else {
                 col.set_config("sortType", fSortTypes[mOrder])
-                AnkiDroidApp.getSharedPrefs(baseContext).edit()
-                    .putBoolean("cardBrowserNoSorting", false)
-                    .apply()
+                AnkiDroidApp.getSharedPrefs(baseContext)
+                    .edit { putBoolean("cardBrowserNoSorting", false) }
             }
             col.set_config("sortBackwards", mOrderAsc)
             searchCards()
@@ -472,20 +456,15 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
 
     @get:VisibleForTesting
     val lastDeckId: Long?
-        get() {
-            val state = getSharedPreferences(PERSISTENT_STATE_FILE, 0)
-            return if (!state.contains(LAST_DECK_ID_KEY)) {
-                null
-            } else state.getLong(LAST_DECK_ID_KEY, -1)
-        }
+        get() = getSharedPreferences(PERSISTENT_STATE_FILE, 0)
+            .all[LAST_DECK_ID_KEY]?.let { id -> id as Long }
 
     private fun saveLastDeckId(id: Long?) {
         if (id == null) {
             clearLastDeckId()
         } else {
-            getSharedPreferences(PERSISTENT_STATE_FILE, 0).edit()
-                .putLong(LAST_DECK_ID_KEY, id)
-                .apply()
+            getSharedPreferences(PERSISTENT_STATE_FILE, 0)
+                .edit { putLong(LAST_DECK_ID_KEY, id) }
         }
     }
 
@@ -559,8 +538,8 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
                 // If a new column was selected then change the key used to map from mCards to the column TextView
                 if (pos != mColumn1Index) {
                     mColumn1Index = pos
-                    AnkiDroidApp.getSharedPrefs(AnkiDroidApp.getInstance().baseContext).edit()
-                        .putInt("cardBrowserColumn1", mColumn1Index).apply()
+                    AnkiDroidApp.getSharedPrefs(AnkiDroidApp.getInstance().baseContext)
+                        .edit { putInt("cardBrowserColumn1", mColumn1Index) }
                     val fromMap = mCardsAdapter!!.fromMapping
                     fromMap[0] = COLUMN1_KEYS[mColumn1Index]
                     mCardsAdapter!!.fromMapping = fromMap
@@ -587,8 +566,8 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
                 // If a new column was selected then change the key used to map from mCards to the column TextView
                 if (pos != mColumn2Index) {
                     mColumn2Index = pos
-                    AnkiDroidApp.getSharedPrefs(AnkiDroidApp.getInstance().baseContext).edit()
-                        .putInt("cardBrowserColumn2", mColumn2Index).apply()
+                    AnkiDroidApp.getSharedPrefs(AnkiDroidApp.getInstance().baseContext)
+                        .edit { putInt("cardBrowserColumn2", mColumn2Index) }
                     val fromMap = mCardsAdapter!!.fromMapping
                     fromMap[1] = COLUMN2_KEYS[mColumn2Index]
                     mCardsAdapter!!.fromMapping = fromMap
@@ -941,7 +920,7 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
     private fun wasLoadedFromExternalTextActionItem(): Boolean {
         intent ?: return false
         // API 23: Replace with Intent.ACTION_PROCESS_TEXT
-        return intent.action.equals("android.intent.action.PROCESS_TEXT", ignoreCase = true)
+        return "android.intent.action.PROCESS_TEXT".equals(intent.action, ignoreCase = true)
     }
 
     private fun updatePreviewMenuItem() {
@@ -1021,7 +1000,13 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
             }
             R.id.action_list_my_searches -> {
                 val savedFiltersObj = col.get_config("savedFilters", null as JSONObject?)
-                val savedFilters: HashMap<String?, String?> = savedFiltersObj?.toHashMap() ?: HashMapInit(0)
+                val savedFilters: HashMap<String?, String?> = savedFiltersObj?.let { obj ->
+                    HashMapInit<String?, String?>(obj.length()).apply {
+                        for (searchName in obj) {
+                            this[searchName] = obj.optString(searchName)
+                        }
+                    }
+                } ?: HashMapInit(0)
                 showDialogFragment(
                     newInstance(
                         savedFilters, mMySearchesDialogListener,
@@ -1311,10 +1296,10 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
             Timber.i("Not showing Change Deck - No Cards")
             return
         }
-        val selectableDecks = validDecksForChangeDeck
-            .stream()
-            .map { deck -> SelectableDeck(deck) }
-            .collect(Collectors.toCollection { ArrayList() })
+        val selectableDecks = ArrayList(
+            validDecksForChangeDeck
+                .map { deck -> SelectableDeck(deck) }
+        )
         val dialog = getChangeDeckDialog(selectableDecks)
         showDialogFragment(dialog)
     }
@@ -1350,14 +1335,12 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
         }
         val allTags = ArrayList(col.tags.all())
         val selectedNotes = selectedCardIds
-            .stream()
             .map { cardId: Long? -> col.getCard(cardId!!).note() }
             .distinct()
-            .collect(Collectors.toList())
-        val checkedTags = selectedNotes
-            .stream()
-            .flatMap { note: Note -> note.tags.stream() }
-            .collect(Collectors.toCollection { ArrayList() })
+        val checkedTags = ArrayList(
+            selectedNotes
+                .flatMap { note: Note -> note.tags }
+        )
         if (selectedNotes.size == 1) {
             Timber.d("showEditTagsDialog: edit tags for one note")
             mTagsDialogListenerAction = TagsDialogListenerAction.EDIT_TAGS
@@ -1365,13 +1348,13 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
             showDialogFragment(dialog)
             return
         }
-        val uncheckedTags = selectedNotes
-            .stream()
-            .flatMap { note: Note ->
-                val noteTags: List<String?> = note.tags
-                allTags.stream().filter { t: String? -> !noteTags.contains(t) }
-            }
-            .collect(Collectors.toCollection { ArrayList() })
+        val uncheckedTags = ArrayList(
+            selectedNotes
+                .flatMap { note: Note ->
+                    val noteTags: List<String?> = note.tags
+                    allTags.filter { t: String? -> !noteTags.contains(t) }
+                }
+        )
         Timber.d("showEditTagsDialog: edit tags for multiple note")
         mTagsDialogListenerAction = TagsDialogListenerAction.EDIT_TAGS
         val dialog = mTagsDialogFactory!!.newTagsDialog().withArguments(
@@ -1494,7 +1477,7 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
     @get:VisibleForTesting
     val validDecksForChangeDeck: List<Deck>
         get() = mDeckSpinnerSelection!!.dropDownDecks
-            .filter { d -> !Decks.isDynamic(d) }
+            .filterNot { d -> Decks.isDynamic(d) }
 
     @RustCleanup("this isn't how Desktop Anki does it")
     override fun onSelectedTags(selectedTags: List<String>?, indeterminateTags: List<String>?, option: Int) {
@@ -1507,10 +1490,8 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
 
     private fun editSelectedCardsTags(selectedTags: List<String>, indeterminateTags: List<String>) {
         val selectedNotes = selectedCardIds
-            .stream()
             .map { cardId: Long? -> col.getCard(cardId!!).note() }
             .distinct()
-            .collect(Collectors.toList())
         selectedNotes
             .forEach { note ->
                 val previousTags: List<String> = note.tags
@@ -1539,18 +1520,10 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
                 else -> ""
             }
         )
-        sb.append(
-            when (option) {
-                1 -> "is:new "
-                2 -> "is:due "
-                else -> ""
-            }
-        )
-        sb.append("(")
         // join selectedTags as "tag:$tag" with " or " between them
-        sb.append(selectedTags.joinToString(" or ") { tag -> "\"tag:$tag\"" })
+        val tagsConcat = selectedTags.joinToString(" or ") { tag -> "\"tag:$tag\"" }
         if (selectedTags.isNotEmpty()) {
-            sb.append(")") // Only if we added anything to the tag list
+            sb.append("($tagsConcat)") // Only if we added anything to the tag list
         }
         mSearchTerms = sb.toString()
         searchCards()
@@ -1610,9 +1583,7 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
     private class UpdateMultipleNotesHandler(browser: CardBrowser) : ListenerWithProgressBarCloseOnFalse<List<Note>, Computation<*>>("Card Browser - UpdateMultipleNotesHandler.actualOnPostExecute(CardBrowser browser)", browser) {
         override fun actualOnProgressUpdate(context: CardBrowser, value: List<Note>) {
             val cardsToUpdate = value
-                .stream()
-                .flatMap { n: Note -> n.cards().stream() }
-                .collect(Collectors.toList())
+                .flatMap { n: Note -> n.cards() }
             context.updateCardsInList(cardsToUpdate)
         }
 
@@ -2039,8 +2010,6 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
             return v
         }
 
-        @Suppress("UNCHECKED_CAST")
-        @KotlinCleanup("Unchecked cast")
         private fun bindView(position: Int, v: View) {
             // Draw the content in the columns
             val columns = v.tag as Array<*>
@@ -2284,13 +2253,15 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
                     5 -> R.attr.flagPink
                     6 -> R.attr.flagTurquoise
                     7 -> R.attr.flagPurple
-                    else ->
-                        if (isMarked(card.note()))
+                    else -> {
+                        if (isMarked(card.note())) {
                             R.attr.markedColor
-                        else if (card.queue == Consts.QUEUE_TYPE_SUSPENDED)
+                        } else if (card.queue == Consts.QUEUE_TYPE_SUSPENDED) {
                             R.attr.suspendedColor
-                        else
+                        } else {
                             android.R.attr.colorBackground
+                        }
+                    }
                 }
             }
 
@@ -2304,12 +2275,13 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
                 Column.TAGS -> card.note().stringTags()
                 Column.CARD -> card.template().optString("name")
                 Column.DUE -> card.dueString
-                Column.EASE ->
+                Column.EASE -> {
                     if (card.type == Consts.CARD_TYPE_NEW) {
                         AnkiDroidApp.getInstance().getString(R.string.card_browser_interval_new_card)
                     } else {
                         (card.factor / 10).toString() + "%"
                     }
+                }
                 Column.CHANGED -> LanguageUtil.getShortDateFormatFromS(card.mod)
                 Column.CREATED -> LanguageUtil.getShortDateFormatFromMs(card.note().id)
                 Column.EDITED -> LanguageUtil.getShortDateFormatFromS(card.note().mod)
@@ -2605,7 +2577,7 @@ open class CardBrowser : NavigationDrawerActivity(), SubtitleListener, DeckSelec
         @JvmStatic
         fun clearLastDeckId() {
             val context: Context = AnkiDroidApp.getInstance()
-            context.getSharedPreferences(PERSISTENT_STATE_FILE, 0).edit().remove(LAST_DECK_ID_KEY).apply()
+            context.getSharedPreferences(PERSISTENT_STATE_FILE, 0).edit { remove(LAST_DECK_ID_KEY) }
         }
 
         private fun getPositionMap(list: CardCollection<CardCache>): Map<Long, Int> {
